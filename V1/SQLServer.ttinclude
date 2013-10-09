@@ -1,0 +1,242 @@
+﻿<#@ include file="Settings.ttinclude" #>
+<#+
+
+const string DESCRIPTION_SQL = @"
+SELECT
+    P.[name],
+    SCHEMA_NAME( P.[schema_id] ) AS [Schema],
+    EP.value
+FROM
+    sys.procedures P LEFT JOIN
+    sys.extended_properties EP ON P.[object_id] = EP.major_id
+WHERE
+    EP.Value IS NOT NULL
+";
+
+IDataReader GetReader(string sql){
+	SqlConnection conn=new SqlConnection(ConnectionString);
+	SqlCommand cmd=new SqlCommand(sql,conn);
+	conn.Open();
+	return cmd.ExecuteReader(CommandBehavior.CloseConnection);
+}
+
+SqlCommand GetCommand(string sql){
+	SqlConnection conn=new SqlConnection(ConnectionString);
+	SqlCommand cmd=new SqlCommand(sql,conn);
+	conn.Open();
+	return cmd;
+}
+
+
+
+void LoadDescs(){
+	if(Descs == null){
+		Descs = new	 Dictionary<string, string>();
+		using(IDataReader idr = GetReader(DESCRIPTION_SQL)){
+			while(idr.Read()){
+				string schema = idr["Schema"].ToString();
+				string name = idr["name"].ToString();
+				string desc = idr["value"].ToString();
+				
+				string key = string.Format("{0}.{1}", schema, name);
+
+				if(!Descs.ContainsKey(key))
+					Descs.Add(key, desc);
+			}
+		}
+	}
+}
+
+
+string FindDesc(string schema, string name){
+	LoadDescs();
+	
+	string key = string.Format("{0}.{1}", schema, name);
+	if(Descs.ContainsKey(key))
+		return Descs[key];
+	else
+		return "";
+}
+
+
+
+List<SPParam> GetSPParams(string spName){
+    var result = new List<SPParam>();
+    string[] restrictions = new string[4] { null, null, spName, null };
+    using(SqlConnection conn = new SqlConnection(ConnectionString))	{
+        conn.Open();
+		var sprocs = conn.GetSchema("ProcedureParameters", restrictions);
+		conn.Close();
+
+		foreach(DataRow row in sprocs.Select(string.Empty, "ORDINAL_POSITION"))	{
+		    SPParam p = new SPParam();
+			string sysType;
+			bool canNull;
+			GetSysType(row["DATA_TYPE"].ToString(), out sysType, out canNull);
+			p.SysType = sysType ;//GetSysType(row["DATA_TYPE"].ToString());
+			p.CanNull = canNull;
+			p.DbType = GetDbType(row["DATA_TYPE"].ToString()).ToString();
+			p.Name = row["PARAMETER_NAME"].ToString().Replace("@", string.Empty);
+			p.CleanName = CleanUp(p.Name);
+			p.ParamName = CleanParam(p.CleanName);
+			p.ParameterMode = row["PARAMETER_MODE"].ToString();
+			p.Size = row["CHARACTER_MAXIMUM_LENGTH"].ToString();
+			result.Add(p);
+		}
+	}
+	return result;
+}
+
+
+List<SP> GetSPs(){
+    var result = new List<SP>();
+    //pull the SPs
+    
+    DataTable sprocs = null;
+    //DataTable parameters = null;
+    
+    using(SqlConnection conn = new SqlConnection(ConnectionString))	{
+        conn.Open();
+		sprocs = conn.GetSchema("Procedures");
+		conn.Close();
+	}
+	
+    foreach(DataRow row in sprocs.Rows)	{
+	    string spType = row["ROUTINE_TYPE"].ToString();
+        var sp = new SP();
+	    sp.Name = row["ROUTINE_NAME"].ToString();
+	    sp.Schema = row["ROUTINE_SCHEMA"].ToString();
+		sp.Desc = FindDesc(sp.Schema, sp.Name);
+        if(spType == "PROCEDURE" & !sp.Name.StartsWith("sp_"))
+		{
+    	    sp.CleanName = CleanUp(sp.Name);
+            sp.Parameters = GetSPParams(sp.Name);
+            result.Add(sp);        
+        }
+    }
+    return result;
+}
+
+string GetSysType(string sqlType, out string sysType, out bool canNull ){
+	sysType="string";
+	canNull = true;
+	switch (sqlType) {
+		case "bigint":
+			sysType = "long";
+			break;
+		case "smallint":
+			sysType= "short";
+			break;
+		case "int":
+			sysType= "int";
+			break;
+		case "uniqueidentifier":
+			sysType=  "Guid";
+			 break;
+		case "smalldatetime":
+		case "datetime":
+		case "datetime2":
+		case "date":
+		case "time":
+			sysType=  "DateTime";
+			  break;
+		case "float":
+			sysType="double";
+			break;
+		case "real":
+		case "numeric":
+		case "smallmoney":
+		case "decimal":
+		case "money":
+			sysType=  "decimal";
+			 break;
+		case "tinyint":
+			sysType = "byte";
+			break;
+		case "bit":
+			sysType=  "bool";
+			   break;
+		case "image":
+		case "binary":
+		case "varbinary":
+		case "timestamp":
+			sysType=  "byte[]";
+			canNull = false;
+			 break;
+	}
+	if(sqlType.StartsWith("T") && sqlType.Length > 1 && char.IsUpper(sqlType, 1))
+	{
+		sysType= "DataTable";
+		canNull = false;
+	}
+		
+	if(sysType == "string") canNull = false;
+	return sysType;
+}
+
+  SqlDbType GetDbType(string sqlType){
+	switch(sqlType)
+	{
+		case "varchar":
+			return SqlDbType.VarChar;
+		case "nvarchar":
+			return SqlDbType.NVarChar;
+		case "int":
+			return SqlDbType.Int;
+		case "uniqueidentifier":
+			return SqlDbType.UniqueIdentifier;
+		case "datetime":
+			return SqlDbType.DateTime;
+		case "bigint":
+			return SqlDbType.BigInt;
+		case "binary":
+			return SqlDbType.Binary;
+		case "bit":
+			return SqlDbType.Bit;
+		case "char":
+			return SqlDbType.Char;
+		case "decimal":
+			return SqlDbType.Decimal;
+		case "float":
+			return SqlDbType.Float;
+		case "image":
+			return SqlDbType.Binary;
+		case "money":
+			return SqlDbType.Money;
+		case "nchar":
+			return SqlDbType.NChar;
+		case "ntext":
+			return SqlDbType.NText;
+		case "numeric":
+			return SqlDbType.Decimal;
+		case "real":
+			return SqlDbType.Real;
+		case "smalldatetime":
+			return SqlDbType.DateTime;
+		case "smallint":
+			return SqlDbType.SmallInt;
+		case "smallmoney":
+			return SqlDbType.SmallMoney;
+		case "sql_variant":
+			return SqlDbType.NVarChar;
+		case "sysname":
+			return SqlDbType.NVarChar;
+		case "text":
+			return SqlDbType.Text;
+		case "timestamp":
+			return SqlDbType.Binary;
+		case "tinyint":
+			return SqlDbType.TinyInt;
+		case "varbinary":
+			return SqlDbType.Binary;
+		 case "xml":
+			return SqlDbType.Xml;
+	}
+	if(sqlType.StartsWith("T") && sqlType.Length > 1 && char.IsUpper(sqlType, 1))
+		return SqlDbType.Structured;
+	else
+		return SqlDbType.NVarChar;
+
+}
+
+#>
